@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>เกมจับคู่ไพ่ (งานประกันสังคม)</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        :root {
+            --bg: #1e1b4b; --panel: #312e81; --panel-soft: #4338ca;
+            --accent: #10b981; --accent-2: #f43f5e; --text: #e0e7ff;
+            --muted: #a5b4fc; --warning: #fbbf24;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh; display: grid; place-items: center;
+            background: linear-gradient(135deg, #0f172a, var(--bg));
+            color: var(--text); font-family: Arial, sans-serif; overflow: hidden;
+        }
+        .screen {
+            width: min(92vw, 500px); background: rgba(30, 27, 75, 0.96);
+            border: 1px solid rgba(165, 180, 252, 0.2); border-radius: 22px; 
+            padding: 28px 22px; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35); position: relative;
+        }
+        .hidden { display: none !important; }
+        h1, h2 { margin-top: 0; text-align: center; }
+        .field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        label { font-size: 0.95rem; color: var(--muted); }
+        input, select {
+            width: 100%; border: 1px solid rgba(165, 180, 252, 0.35);
+            background: rgba(15, 23, 42, 0.8); color: white;
+            border-radius: 12px; padding: 12px 14px; font-size: 1rem;
+        }
+        button {
+            border: none; border-radius: 12px; padding: 12px 16px; font-size: 1rem; font-weight: 700;
+            cursor: pointer; transition: transform 0.2s; width: 100%; margin-bottom: 10px;
+        }
+        button:hover:not(:disabled) { transform: translateY(-2px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-secondary { background: var(--accent-2); color: white; }
+        
+        /* Grid สำหรับไพ่ */
+        #game-board {
+            display: grid; gap: 10px; margin-top: 20px;
+            perspective: 1000px;
+        }
+        .card {
+            aspect-ratio: 3/4; background: transparent; cursor: pointer;
+            position: relative; transition: transform 0.6s; transform-style: preserve-3d;
+        }
+        .card.flipped { transform: rotateY(180deg); }
+        .card-face {
+            position: absolute; width: 100%; height: 100%; backface-visibility: hidden;
+            border-radius: 12px; display: flex; justify-content: center; align-items: center;
+            font-size: 2.5rem; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }
+        .card-front {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white; transform: rotateY(0deg);
+        }
+        .card-back {
+            background: white; transform: rotateY(180deg);
+            border: 2px solid var(--accent);
+        }
+        .card-front::after { content: "❓"; font-size: 2rem; opacity: 0.5; }
+        
+        .status-bar {
+            display: flex; justify-content: space-between; background: rgba(0,0,0,0.3);
+            padding: 10px 15px; border-radius: 12px; margin-bottom: 15px;
+        }
+        .turn-indicator { text-align: center; font-size: 1.2rem; margin-bottom: 10px; color: var(--warning); font-weight: bold; }
+        .qr-box { text-align: center; margin-bottom: 20px; background: white; padding: 10px; border-radius: 12px; }
+        .scoreboard { font-size: 0.9rem; margin-top: 15px; background: var(--panel); padding: 10px; border-radius: 8px;}
+    </style>
+    <script>
+        if (window.location.search.includes('room=')) {
+            document.write('<style>.host-only { display: none !important; }</style>');
+        }
+    </script>
+</head>
+<body>
+
+    <!-- Lobby -->
+    <div id="screen-lobby" class="screen">
+        <a href="/" style="position: absolute; top: 10px; left: 10px; color: var(--muted); text-decoration: none; font-size: 0.9rem;">🏠 หน้าหลัก</a>
+        <h1 style="margin-top: 20px; font-size: 1.8rem; color: var(--warning);">🃏 จับคู่ไพ่ประกันสังคม</h1>
+        
+        <div class="field">
+            <label>ชื่อผู้เล่น</label>
+            <input id="player-name" type="text" placeholder="ชื่อของคุณ" maxlength="15">
+        </div>
+        
+        <div id="host-section" class="host-only" style="border-top: 1px solid var(--panel-soft); padding-top: 15px; margin-top: 5px;">
+            <div class="field">
+                <label>โหมดการเล่น</label>
+                <select id="game-mode" onchange="toggleMode()">
+                    <option value="single">เล่นคนเดียว (ท้าทายตัวเอง)</option>
+                    <option value="multi">เล่นหลายคน (แข่งขัน)</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>จำนวนไพ่</label>
+                <select id="card-count">
+                    <option value="8">8 ใบ (4 คู่)</option>
+                    <option value="12" selected>12 ใบ (6 คู่)</option>
+                    <option value="16">16 ใบ (8 คู่)</option>
+                    <option value="20">20 ใบ (10 คู่)</option>
+                </select>
+            </div>
+            <div id="single-settings">
+                <div class="field">
+                    <label>เวลาไม่เกิน (วินาที)</label>
+                    <input id="time-limit" type="number" value="60" min="10">
+                </div>
+                <div class="field">
+                    <label>ผิดได้สูงสุด (ครั้ง)</label>
+                    <input id="mistake-limit" type="number" value="5" min="1">
+                </div>
+            </div>
+            <button id="btn-create" class="btn-primary">สร้างห้อง / เริ่มเล่น</button>
+        </div>
+
+        <div id="join-room-section" style="border-top: 1px solid var(--panel-soft); padding-top: 15px; margin-top: 10px;">
+            <div class="field">
+                <label>รหัสห้อง</label>
+                <input id="room-code" type="text" placeholder="กรอกรหัสห้อง" maxlength="4" style="text-transform: uppercase;">
+            </div>
+        </div>
+        <button id="btn-join" class="btn-secondary">เข้าห้อง</button>
+        </div>
+    </div>
+
+    <!-- Setup (Multiplayer only) -->
+    <div id="screen-setup" class="screen hidden">
+        <h2>รอผู้เล่นคนอื่นๆ...</h2>
+        <div style="text-align: center; margin-bottom: 10px;">รหัสห้อง: <strong id="display-room-code" style="font-size: 1.5rem; color: var(--accent);">-</strong></div>
+        <div id="qr-container" class="qr-box hidden">
+            <img id="qr-code-img" src="" alt="QR Code" style="width: 150px; height: 150px;">
+        </div>
+        <div id="players-list" style="text-align: center; color: var(--muted); margin-bottom: 15px;">ผู้เล่น: 1 คน</div>
+        <button id="btn-start-multi" class="btn-primary hidden">เริ่มเกมเลย!</button>
+        <div id="setup-status" style="text-align: center; color: var(--warning);">รอโฮสต์กดเริ่มเกม...</div>
+    </div>
+
+    <!-- Game -->
+    <div id="screen-game" class="screen hidden" style="width: min(96vw, 600px);">
+        <div class="status-bar">
+            <div id="game-info-1"></div>
+            <div id="game-info-2"></div>
+        </div>
+        <div id="turn-indicator" class="turn-indicator"></div>
+        <div id="game-board"></div>
+        
+        <!-- กระดานคะแนนเรียลไทม์ (สำหรับโฮสต์) -->
+        <div id="host-live-scoreboard" class="scoreboard hidden" style="margin-top: 20px;">
+            <h3 style="margin-top:0; color:var(--accent); text-align:center;">📊 คะแนนผู้เล่น (Real-time)</h3>
+            <div id="live-scores-list"></div>
+        </div>
+    </div>
+
+    <!-- Result -->
+    <div id="screen-result" class="screen hidden">
+        <h1 id="result-title">จบเกม!</h1>
+        <h3 id="result-subtitle" style="text-align: center; color: white;">-</h3>
+        <div id="scoreboard" class="scoreboard hidden"></div>
+        <button onclick="window.location.reload()" class="btn-primary" style="margin-top: 20px;">เล่นใหม่อีกครั้ง</button>
+    </div>
+
+    <!-- Audios -->
+    <audio id="bgm" src="match_bgm.mp3" loop preload="auto"></audio>
+    <audio id="sfx-flip" src="flip.mp3" preload="auto"></audio>
+    <audio id="sfx-match" src="match_success.mp3" preload="auto"></audio>
+    <audio id="sfx-fail" src="match_fail.mp3" preload="auto"></audio>
+
+    <script>
+        const socket = io();
+        let myId = null;
+        let myName = "";
+        let currentRoom = null;
+        let isMyTurn = false;
+        let timerInterval = null;
+
+        let isHostMode = false;
+
+        socket.on('connect', () => { myId = socket.id; });
+
+        function showScreen(id) {
+            document.querySelectorAll('.screen').forEach(el => el.classList.add('hidden'));
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function toggleMode() {
+            const mode = document.getElementById('game-mode').value;
+            document.getElementById('single-settings').style.display = (mode === 'single') ? 'block' : 'none';
+        }
+
+        window.onload = () => {
+            const params = new URLSearchParams(window.location.search);
+            const roomFromUrl = params.get('room');
+            if (roomFromUrl) {
+                document.getElementById('room-code').value = roomFromUrl.toUpperCase();
+                document.getElementById('join-room-section').classList.add('hidden');
+                document.getElementById('btn-join').textContent = 'เข้าร่วมเกม';
+            }
+        };
+
+        document.getElementById('btn-create').addEventListener('click', () => {
+            myName = document.getElementById('player-name').value.trim();
+            if(!myName) return alert("กรุณาใส่ชื่อ");
+            
+            const mode = document.getElementById('game-mode').value;
+            const data = {
+                hostName: myName,
+                mode: mode,
+                cardCount: document.getElementById('card-count').value,
+                timeLimit: document.getElementById('time-limit').value,
+                mistakeLimit: document.getElementById('mistake-limit').value
+            };
+            
+            isHostMode = true;
+            
+            socket.emit('match_createRoom', data, (res) => {
+                currentRoom = res.roomId;
+                document.getElementById('display-room-code').textContent = currentRoom;
+                const joinUrl = `${window.location.origin}/matchgame?room=${currentRoom}`;
+                document.getElementById('qr-code-img').src = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(joinUrl)}`;
+                document.getElementById('qr-container').classList.remove('hidden');
+                document.getElementById('btn-start-multi').classList.remove('hidden');
+                document.getElementById('setup-status').classList.add('hidden');
+                showScreen('screen-setup');
+            });
+        });
+
+        document.getElementById('btn-join').addEventListener('click', () => {
+            myName = document.getElementById('player-name').value.trim();
+            currentRoom = document.getElementById('room-code').value.trim().toUpperCase();
+            if(!myName || !currentRoom) return alert("กรุณาใส่ชื่อและรหัสห้อง");
+            
+            isHostMode = false;
+            socket.emit('match_joinRoom', { roomId: currentRoom, playerName: myName }, (res) => {
+                if (res.success) {
+                    document.getElementById('display-room-code').textContent = currentRoom;
+                    showScreen('screen-setup');
+                } else alert(res.message);
+            });
+        });
+
+        socket.on('match_updatePlayers', (players) => {
+            document.getElementById('players-list').textContent = `ผู้เล่นเข้าห้องแล้ว: ${players.length} คน`;
+            // อัปเดตตารางคะแนนเรียลไทม์ตั้งแต่ในล็อบบี้ถ้าโฮสต์เปิดไว้
+            renderHostScoreboard(players);
+        });
+
+        document.getElementById('btn-start-multi').addEventListener('click', () => {
+            socket.emit('match_startGame', currentRoom);
+        });
+
+        socket.on('match_gameStarted', (state) => {
+            document.getElementById('bgm').play().catch(()=>{});
+            showScreen('screen-game');
+            
+            renderBoard(state.cards);
+            updateStatus(state);
+            
+            // ให้ทุกคนเห็น timer ถ้าเป็น single mode
+            if (state.mode === 'single') {
+                startTimer(state.timeLimit);
+            }
+        });
+
+        function renderHostScoreboard(players) {
+            const list = document.getElementById("live-scores-list");
+            if (!list) return;
+            list.innerHTML = '';
+            const sorted = [...players].sort((a, b) => b.score - a.score);
+            sorted.forEach((p, i) => {
+                list.innerHTML += `<div style="display:flex; justify-content:space-between; margin-bottom:5px; padding:8px; background:rgba(0,0,0,0.3); border-radius:8px;">
+                    <span>${i + 1}. ${p.name}</span><span style="color:var(--accent); font-weight:bold;">${p.score} คู่</span>
+                </div>`;
+            });
+            if (players.length === 0) list.innerHTML = "<div style='text-align:center; color:var(--muted);'>ยังไม่มีผู้เล่น</div>";
+        }
+
+        function renderBoard(cards) {
+            const board = document.getElementById('game-board');
+            board.innerHTML = '';
+            
+            // ปรับคอลัมน์ตามจำนวนไพ่
+            let cols = 4;
+            if(cards.length === 8) cols = 4;
+            else if(cards.length === 12) cols = 4;
+            else if(cards.length === 16) cols = 4;
+            else if(cards.length === 20) cols = 5;
+            
+            board.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+            
+            cards.forEach(card => {
+                const el = document.createElement('div');
+                el.className = 'card';
+                el.id = `card-${card.id}`;
+                el.innerHTML = `
+                    <div class="card-face card-front"></div>
+                    <div class="card-face card-back">${card.isMatched ? card.icon : ''}</div>
+                `;
+                if(card.isMatched) el.classList.add('flipped');
+                else {
+                    el.onclick = () => {
+                        if(isHostMode) return; // โฮสต์ห้ามกดเด็ดขาด
+                        if(!isMyTurn || el.classList.contains('flipped')) return;
+                        document.getElementById('sfx-flip').play().catch(()=>{});
+                        socket.emit('match_flip', { roomId: currentRoom, cardId: card.id });
+                    };
+                }
+                board.appendChild(el);
+            });
+        }
+
+        function updateStatus(state) {
+            const info1 = document.getElementById('game-info-1');
+            const info2 = document.getElementById('game-info-2');
+            const turnInd = document.getElementById('turn-indicator');
+            
+            if (isHostMode) {
+                renderHostScoreboard(state.players);
+                document.getElementById('host-live-scoreboard').classList.remove('hidden');
+            }
+            
+            if (state.mode === 'single') {
+                info1.textContent = `ผิดได้อีก: ${state.mistakeLimit - state.mistakes} ครั้ง`;
+                if (isHostMode) {
+                    info2.textContent = "สถานะ: โฮสต์ผู้ชม";
+                    turnInd.innerHTML = `<span style="color:var(--muted);">ผู้เล่นกำลังจับคู่ไพ่...</span>`;
+                    isMyTurn = false;
+                } else {
+                    turnInd.textContent = "ลุยเลย!";
+                    isMyTurn = true;
+                }
+            } else {
+                info1.textContent = `คู่ที่เจอแล้ว: ${state.matchedPairs} / ${state.totalPairs}`;
+                
+                if (isHostMode) {
+                    info2.textContent = "สถานะ: โฮสต์ผู้ชม";
+                    isMyTurn = false;
+                } else {
+                    const me = state.players.find(p => p.id === myId);
+                    info2.textContent = `คะแนนคุณ: ${me ? me.score : 0}`;
+                }
+                
+                if (state.players.length > 0) {
+                    const activePlayer = state.players[state.currentTurnIndex];
+                    isMyTurn = (activePlayer && activePlayer.id === myId);
+                    
+                    if (isMyTurn) turnInd.innerHTML = `<span style="color:var(--accent);">⭐ ตาของคุณแล้ว! เลือกไพ่เลย</span>`;
+                    else turnInd.innerHTML = `<span style="color:var(--muted);">รอตาของ: ${activePlayer.name}...</span>`;
+                }
+            }
+        }
+
+        socket.on('match_cardFlipped', (data) => {
+            const cardEl = document.getElementById(`card-${data.cardId}`);
+            if(cardEl) {
+                cardEl.querySelector('.card-back').textContent = data.icon;
+                cardEl.classList.add('flipped');
+                if(data.who !== myId) document.getElementById('sfx-flip').play().catch(()=>{});
+            }
+        });
+
+        socket.on('match_result', (data) => {
+            isMyTurn = false; // Block inputs during delay
+            setTimeout(() => {
+                if(data.success) {
+                    document.getElementById('sfx-match').play().catch(()=>{});
+                } else {
+                    document.getElementById('sfx-fail').play().catch(()=>{});
+                    // Flip back
+                    data.cards.forEach(id => {
+                        const el = document.getElementById(`card-${id}`);
+                        if(el) {
+                            el.classList.remove('flipped');
+                            setTimeout(() => el.querySelector('.card-back').textContent = '', 600); // clear text after animation
+                        }
+                    });
+                }
+                updateStatus(data.state);
+            }, 1000); // ดีเลย์ให้ผู้เล่นเห็นไพ่ก่อน 1 วินาที
+        });
+
+        socket.on('match_gameOver', (data) => {
+            clearInterval(timerInterval);
+            document.getElementById('bgm').pause();
+            setTimeout(() => {
+                showScreen('screen-result');
+                const t = document.getElementById('result-title');
+                const sub = document.getElementById('result-subtitle');
+                const sb = document.getElementById('scoreboard');
+                
+                if (data.mode === 'single') {
+                    if (data.win) {
+                        t.textContent = "🏆 ชนะแล้ว!";
+                        t.style.color = "var(--accent)";
+                        sub.textContent = `คุณเปิดผิดไป ${data.mistakes} ครั้ง`;
+                    } else {
+                        t.textContent = "😭 เกมโอเวอร์!";
+                        t.style.color = "var(--danger)";
+                        sub.textContent = data.reason === 'time' ? "หมดเวลาแล้ว!" : "เปิดไพ่ผิดเกินกำหนด!";
+                    }
+                } else {
+                    t.textContent = "จบเกม!";
+                    sb.classList.remove('hidden');
+                    sb.innerHTML = '';
+                    
+                    const sorted = data.players.sort((a,b) => b.score - a.score);
+                    let myRank = 0;
+                    sorted.forEach((p, i) => {
+                        if(p.id === myId) myRank = i + 1;
+                        sb.innerHTML += `<div style="margin-bottom:8px;"><strong>อันดับ ${i+1}:</strong> ${p.name} - <span style="color:var(--accent)">${p.score} คู่</span></div>`;
+                    });
+                    
+                    if (myRank === 1 && sorted[0].score > 0) {
+                        sub.innerHTML = `<span style="color:var(--accent);">🎉 ยินดีด้วย คุณคือผู้ชนะ! 🎉</span>`;
+                    } else {
+                        sub.innerHTML = `<span style="color:var(--danger);">คุณได้อันดับที่ ${myRank}</span>`;
+                    }
+                }
+            }, 1500); // delay before showing result
+        });
+
+        function startTimer(seconds) {
+            let timeLeft = seconds;
+            const timerEl = document.getElementById('game-info-2');
+            timerEl.style.color = "white";
+            
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                timerEl.textContent = `เวลา: ${timeLeft}s`;
+                if(timeLeft <= 10) timerEl.style.color = "var(--danger)";
+                
+                if(timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    socket.emit('match_timeUp', currentRoom);
+                }
+            }, 1000);
+            timerEl.textContent = `เวลา: ${timeLeft}s`;
+        }
+    </script>
+</body>
+</html>

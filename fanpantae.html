@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>เกมแฟนพันธุ์แท้ (ออนไลน์)</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --bg: #0f172a; --panel: #111827; --panel-soft: #1f2937;
+            --accent: #22c55e; --accent-2: #3b82f6; --text: #e5e7eb;
+            --muted: #94a3b8; --danger: #f87171; --warning: #fbbf24;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh; display: grid; place-items: center;
+            background: linear-gradient(135deg, #020617, var(--bg));
+            color: var(--text); font-family: Arial, sans-serif; overflow: hidden;
+        }
+        .screen {
+            width: min(92vw, 480px); background: rgba(17, 24, 39, 0.96);
+            border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 22px; 
+            padding: 28px 22px; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35); position: relative;
+        }
+        .hidden { display: none !important; }
+        h1, h2 { margin-top: 0; text-align: center; }
+        .field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+        label { font-size: 0.95rem; color: var(--muted); }
+        input, select {
+            width: 100%; border: 1px solid rgba(148, 163, 184, 0.35);
+            background: rgba(15, 23, 42, 0.8); color: var(--text);
+            border-radius: 12px; padding: 12px 14px; font-size: 1rem;
+        }
+        input:focus, select:focus { outline: 2px solid rgba(59, 130, 246, 0.45); border-color: var(--accent-2); }
+        .button-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 18px 0; }
+        button {
+            border: none; border-radius: 12px; padding: 12px 16px; font-size: 1rem; font-weight: 700;
+            cursor: pointer; transition: transform 0.2s ease, opacity 0.2s ease;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button:hover:not(:disabled) { transform: translateY(-1px); }
+        .btn-primary { background: var(--accent); color: #062a16; }
+        .btn-secondary { background: var(--accent-2); color: white; }
+        .btn-answer { background: var(--panel-soft); color: var(--text); text-align: left; margin-bottom: 8px; width: 100%; }
+        .btn-answer.correct { background: var(--accent) !important; color: #000 !important; }
+        .btn-answer.wrong { background: var(--danger) !important; color: #fff !important; }
+        .status {
+            margin-top: 18px; padding: 12px; background: rgba(15, 23, 42, 0.75);
+            border-radius: 12px; color: var(--muted); min-height: 48px; text-align: center;
+        }
+        .qr-box { text-align: center; margin-bottom: 20px; background: white; padding: 10px; border-radius: 12px; }
+        .qr-box img { width: 150px; height: 150px; }
+        #players-list { text-align: center; color: var(--warning); margin-bottom: 15px; font-size: 0.9rem; }
+        .btn-admin {
+            position: absolute; top: 10px; right: 10px; background: none; border: none;
+            color: var(--muted); font-size: 0.8rem; padding: 5px; cursor: pointer;
+        }
+        .scoreboard { font-size: 0.9rem; text-align: left; margin-top: 15px; background: var(--panel); padding: 10px; border-radius: 8px;}
+        
+        /* Overlay สำหรับประกาศคนตอบถูก */
+        #round-result-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; 
+            background: rgba(15, 23, 42, 0.95); display: flex; flex-direction: column; 
+            justify-content: center; align-items: center; text-align: center; padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <script>
+        if (window.location.search.includes('room=')) {
+            document.write('<style>.host-only { display: none !important; }</style>');
+        }
+    </script>
+    <div id="screen-lobby" class="screen">
+        <a href="/" style="position: absolute; top: 10px; left: 10px; color: var(--muted); text-decoration: none; font-size: 0.9rem;">🏠 หน้าหลัก</a>
+        <button class="btn-admin host-only" onclick="showScreen('admin')">⚙️ แอดมิน</button>
+        <h1>เกมแฟนพันธุ์แท้</h1>
+        <div class="field">
+            <label>ชื่อผู้เล่น</label>
+            <input id="input-player-name" type="text" placeholder="กรอกชื่อของคุณ" maxlength="20">
+        </div>
+        <div class="field host-only" style="border-top: 1px solid var(--panel-soft); padding-top: 15px; margin-top: 5px;">
+            <label>โหมดการเล่น (สำหรับคนสร้างห้อง)</label>
+            <select id="game-mode" onchange="document.getElementById('fan-single-settings').classList.toggle('hidden', this.value === 'multi')">
+                <option value="multi">เล่นหลายคน (แข่งขันตอบไว)</option>
+                <option value="single">เล่นคนเดียว (ท้าทายตัวเอง)</option>
+            </select>
+        </div>
+        <div id="fan-single-settings" class="hidden host-only">
+            <div class="field">
+                <label>เวลาในการตอบแต่ละข้อ (วินาที)</label>
+                <input id="time-limit" type="number" value="10" min="3">
+            </div>
+            <div class="field">
+                <label>ตอบผิดได้สูงสุด (ครั้ง)</label>
+                <input id="mistake-limit" type="number" value="3" min="1">
+            </div>
+        </div>
+        <div class="field host-only" style="border-top: 1px solid var(--panel-soft); padding-top: 15px; margin-top: 5px;">
+            <label>เลือกชุดคำถาม (สำหรับคนสร้างห้อง)</label>
+            <select id="select-question-set"><option value="">-- รอโหลดชุดคำถาม --</option></select>
+        </div>
+        <button id="btn-create-room" class="btn-primary host-only" style="width: 100%; margin-bottom: 20px;">สร้างห้อง (Host)</button>
+        <div id="join-room-section" class="field" style="border-top: 1px solid var(--panel-soft); padding-top: 15px;">
+            <label>รหัสห้อง (สำหรับคนเข้าร่วม)</label>
+            <input id="input-room-code" type="text" placeholder="เช่น ABCD" maxlength="4" style="text-transform: uppercase;">
+        </div>
+        <button id="btn-join-room" class="btn-secondary" style="width: 100%;">เข้าห้อง</button>
+    </div>
+
+    <div id="screen-admin" class="screen hidden">
+        <h2>ระบบจัดการคำถาม</h2>
+        <div class="field">
+            <label>รหัสผ่านแอดมิน</label>
+            <div style="display: flex; gap: 8px;">
+                <input id="admin-pass" type="password" placeholder="รหัสผ่าน" style="flex: 1;">
+                <button type="button" onclick="const p = document.getElementById('admin-pass'); p.type = p.type === 'password' ? 'text' : 'password';" style="padding: 10px; border-radius: 12px; background: var(--panel-soft); color: var(--text);">👁️</button>
+            </div>
+        </div>
+        <div class="field">
+            <label>อัปโหลดไฟล์ Excel (.xlsx)</label>
+            <input id="admin-file" type="file" accept=".xlsx, .xls">
+            <small style="color: var(--muted); font-size: 0.8rem;">
+                คอลัมน์: 1.ลำดับ, 2.คำถาม, 3.ช้อย 1, 4.ช้อย 2, 5.ช้อย 3, 6.ช้อย 4, 7.เฉลย (พิมพ์ 1-4)
+            </small>
+        </div>
+        <div class="field hidden" id="admin-sheet-container">
+            <label>เลือก Sheet ที่ต้องการ</label>
+            <select id="admin-sheet-select"></select>
+            <br><br>
+            <label>ตั้งชื่อชุดคำถามนี้</label>
+            <input type="text" id="admin-set-name" placeholder="เช่น แฟนพันธุ์แท้ ม.33">
+        </div>
+        <button id="btn-upload-excel" class="btn-primary" style="width: 100%; margin-top: 20px;">อัปโหลดขึ้นเซิร์ฟเวอร์</button>
+        <button id="btn-manage-sets" class="btn-secondary" style="width: 100%; margin-top: 10px;">จัดการชุดคำถามที่มีในระบบ</button>
+        <button onclick="showScreen('lobby')" class="btn-secondary" style="width: 100%; margin-top: 10px;">กลับหน้าหลัก</button>
+    </div>
+
+    <!-- Admin Manage Modal -->
+    <div id="admin-manage-modal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; overflow-y: auto; padding: 20px;">
+        <div style="max-width: 800px; margin: 0 auto; background: var(--panel-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--panel-border);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0; color: var(--accent);">จัดการชุดคำถาม</h2>
+                <button onclick="document.getElementById('admin-manage-modal').classList.add('hidden')" style="background: var(--danger); color: white; border: none; padding: 5px 15px; border-radius: 8px; cursor: pointer;">ปิด</button>
+            </div>
+            
+            <div id="manage-sets-list" style="margin-bottom: 20px; border-bottom: 1px solid var(--panel-soft); padding-bottom: 20px;">
+                <!-- List of sets will appear here -->
+            </div>
+            
+            <div id="manage-set-editor" class="hidden">
+                <h3 id="editor-set-name" style="color: white; margin-top: 0;">แก้ไขชุดคำถาม</h3>
+                <div id="editor-questions-list" style="max-height: 50vh; overflow-y: auto; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 8px;"></div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button id="btn-save-set-changes" class="btn-primary" style="flex: 1;">บันทึกการเปลี่ยนแปลง</button>
+                    <button id="btn-delete-set" style="background: var(--danger); color: white; border: none; padding: 10px; border-radius: 8px; cursor: pointer; flex: 1;">ลบชุดคำถามนี้ทิ้ง</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="screen-setup" class="screen hidden">
+        <h2>รอผู้เล่น...</h2>
+        <div style="text-align: center; color: var(--muted); margin-bottom: 10px;">รหัสห้อง: <strong id="room-code-label" style="font-size: 1.5rem; color: var(--accent);">-</strong></div>
+        <div id="qr-container" class="qr-box hidden">
+            <img id="qr-code-img" src="" alt="QR Code">
+            <p style="color: black; font-size: 0.8rem; margin: 5px 0 0 0;">สแกนเพื่อเข้าร่วมห้องนี้</p>
+        </div>
+        <div id="players-list">ผู้เล่นในห้อง: 1 คน</div>
+        <button id="btn-start-game" class="btn-primary hidden" style="width: 100%; margin-bottom: 12px;">เริ่มเกม</button>
+        <div id="status-message" class="status">กำลังรอโฮสต์กดเริ่มเกม...</div>
+    </div>
+
+    <div id="screen-game" class="screen hidden">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h2 id="question-number" style="margin:0;">คำถามที่ 1/10</h2>
+            <h3 id="fan-timer-display" class="hidden" style="margin:0; color:var(--danger);">เวลา: 10s</h3>
+        </div>
+        <div class="status" style="margin-top: 15px; margin-bottom: 20px;">
+            <div id="question-text" style="font-size: 1.1rem; font-weight: bold; color: white;">คำถามกำลังโหลด...</div>
+        </div>
+        <div class="field" id="answers-container"></div>
+        <div id="game-status-message" class="status">รอคนตอบ...</div>
+        
+        <!-- กระดานคะแนนเรียลไทม์ (สำหรับโฮสต์) -->
+        <div id="host-live-scoreboard" class="scoreboard hidden">
+            <h3 style="margin-top:0; color:var(--accent); text-align:center;">📊 คะแนนผู้เล่น (Real-time)</h3>
+            <div id="live-scores-list"></div>
+        </div>
+    </div>
+
+    <!-- Overlay แจ้งคนตอบถูก -->
+    <div id="round-result-overlay" class="hidden">
+        <h2 id="round-winner-title" style="color: var(--accent); font-size: 2rem; margin-bottom: 10px;">มีคนตอบถูกแล้ว!</h2>
+        <h3 id="round-winner-name" style="color: white; font-size: 1.5rem; margin-bottom: 20px;">ผู้ตอบถูก: -</h3>
+        <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 12px; margin-bottom: 20px;">
+            <div style="color: var(--muted); font-size: 0.9rem; margin-bottom: 5px;">เฉลยคือ</div>
+            <div id="round-correct-answer" style="font-size: 1.3rem; color: var(--accent); font-weight: bold;">-</div>
+        </div>
+        <div id="my-round-score" style="color: var(--warning); font-size: 1.2rem; font-weight: bold; margin-bottom: 15px;" class="hidden">
+            🎉 คุณได้ +10 คะแนน! (รวม: <span id="my-total-score">0</span>) 🎉
+        </div>
+        <div style="color: var(--muted); font-size: 0.9rem;">กำลังเตรียมข้อต่อไป...</div>
+    </div>
+
+    <!-- หน้าสรุปผล (จบเกม) -->
+    <div id="screen-result" class="screen hidden">
+        <h2 id="result-title">จบเกม!</h2>
+        <div id="result-subtitle" style="text-align: center; color: var(--muted); margin-bottom: 15px;">สรุปคะแนน</div>
+        <div id="scoreboard" class="scoreboard"></div>
+        <button onclick="window.location.reload()" class="btn-secondary" style="width: 100%; margin-top: 20px;">เล่นใหม่อีกครั้ง</button>
+    </div>
+
+    <!-- ไฟล์เสียงประกอบ -->
+    <audio id="bg-music" src="bgm.mp3" loop preload="auto"></audio>
+    <audio id="correct-sound" src="correct.mp3" preload="auto"></audio>
+    <audio id="wrong-sound" src="wrong.mp3" preload="auto"></audio>
+
+    <script>
+        const socket = io();
+        let currentRoomId = null;
+        let playerName = "";
+        let isHost = false;
+
+        const screens = {
+            lobby: document.getElementById("screen-lobby"),
+            admin: document.getElementById("screen-admin"),
+            setup: document.getElementById("screen-setup"),
+            game: document.getElementById("screen-game"),
+            result: document.getElementById("screen-result")
+        };
+
+        function showScreen(name) {
+            Object.entries(screens).forEach(([key, element]) => {
+                if (element) element.classList.toggle("hidden", key !== name);
+            });
+        }
+
+        function generateRoomCode() {
+            const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            let code = "";
+            for (let i = 0; i < 4; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+            return code;
+        }
+
+        window.onload = () => {
+            const params = new URLSearchParams(window.location.search);
+            const roomFromUrl = params.get('room');
+            if (roomFromUrl) {
+                document.getElementById('input-room-code').value = roomFromUrl.toUpperCase();
+                document.getElementById('join-room-section').classList.add('hidden');
+                document.getElementById('btn-join-room').textContent = 'เข้าร่วมเกม';
+            }
+        };
+
+        socket.on('updateSets', (sets) => {
+            const select = document.getElementById("select-question-set");
+            select.innerHTML = '';
+            if (sets.length === 0) select.innerHTML = '<option value="">-- ยังไม่มีชุดคำถาม --</option>';
+            else sets.forEach(set => {
+                const opt = document.createElement('option');
+                opt.value = set.id; opt.textContent = set.name;
+                select.appendChild(opt);
+            });
+        });
+
+        let currentWorkbook = null;
+        document.getElementById("admin-file").addEventListener("change", (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                currentWorkbook = XLSX.read(data, {type: 'array'});
+                const sheetSelect = document.getElementById("admin-sheet-select");
+                sheetSelect.innerHTML = '';
+                currentWorkbook.SheetNames.forEach(name => {
+                    const opt = document.createElement('option');
+                    opt.value = name; opt.textContent = name;
+                    sheetSelect.appendChild(opt);
+                });
+                document.getElementById("admin-sheet-container").classList.remove("hidden");
+                document.getElementById("admin-set-name").value = currentWorkbook.SheetNames[0];
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        document.getElementById("btn-upload-excel").addEventListener("click", () => {
+            const pass = document.getElementById("admin-pass").value;
+            const setName = document.getElementById("admin-set-name").value.trim();
+            const sheetName = document.getElementById("admin-sheet-select").value;
+
+            if (!pass || !setName || !currentWorkbook || !sheetName) return alert("กรุณากรอกข้อมูลให้ครบถ้วน!");
+            
+            const sheet = currentWorkbook.Sheets[sheetName];
+            const json = XLSX.utils.sheet_to_json(sheet, {header: 1}); 
+            const questions = [];
+            
+            for(let i = 1; i < json.length; i++) {
+                const row = json[i];
+                if (!row || !row[1]) continue; 
+                
+                const c1_raw = String(row[2] || "").trim();
+                const c2_raw = String(row[3] || "").trim();
+                const c3_raw = String(row[4] || "").trim();
+                const c4_raw = String(row[5] || "").trim();
+                const answerCol = String(row[6] || "").trim();
+
+                const allColumns = [c1_raw, c2_raw, c3_raw, c4_raw];
+                let correctText = String(row[6] || "").trim(); // คอลัมน์ที่ 7 (Answer)
+                
+                // กำจัดจุดและช่องว่างที่อาจพิมพ์ติดมา
+                const normalizedAns = correctText.replace(/[\.\s]/g, '').toUpperCase();
+                
+                // แปลงตัวอักษรเป็นตัวเลข
+                const charMap = {
+                    'ก': '1', 'ข': '2', 'ค': '3', 'ง': '4',
+                    'A': '1', 'B': '2', 'C': '3', 'D': '4',
+                    'ช้อย1': '1', 'ช้อย2': '2', 'ช้อย3': '3', 'ช้อย4': '4',
+                    'ข้อ1': '1', 'ข้อ2': '2', 'ข้อ3': '3', 'ข้อ4': '4',
+                    'CHOICE1': '1', 'CHOICE2': '2', 'CHOICE3': '3', 'CHOICE4': '4'
+                };
+                
+                if (charMap[normalizedAns]) {
+                    correctText = charMap[normalizedAns];
+                } else if (['1', '2', '3', '4'].includes(normalizedAns)) {
+                    correctText = normalizedAns;
+                }
+
+                // ถ้าเฉลยเป็นตัวเลข 1-4 ให้ดึงข้อความจากคอลัมน์ตัวเลือกมาเป็นเฉลย
+                if (['1', '2', '3', '4'].includes(correctText)) {
+                    correctText = allColumns[parseInt(correctText) - 1];
+                }
+
+                if (!correctText) {
+                    correctText = allColumns.find(c => c !== "") || "ไม่มีเฉลย";
+                }
+
+                const wrongChoices = [];
+                let foundCorrect = false;
+                
+                for (const c of allColumns) {
+                    if (c === "") continue;
+                    
+                    // ถ้าข้อความตรงกับเฉลยเป๊ะๆ ให้ข้ามไป (เจอเฉลยแล้ว) 
+                    // ป้องกันกรณีที่เฉลยซ้ำกับตัวเลือกอื่น
+                    if (c === correctText && !foundCorrect) {
+                        foundCorrect = true;
+                    } else {
+                        wrongChoices.push(c);
+                    }
+                }
+
+                questions.push({
+                    q: row[1],
+                    c1: correctText, 
+                    c2: wrongChoices[0] || "",
+                    c3: wrongChoices[1] || "",
+                    c4: wrongChoices[2] || ""
+                });
+            }
+
+            if (questions.length === 0) return alert("ไม่พบข้อมูลคำถามในชีทที่เลือก!");
+
+            socket.emit('adminUpload', { password: pass, setName: setName, questions: questions }, (res) => {
+                if (res.success) {
+                    alert(res.message); showScreen('lobby');
+                    document.getElementById("admin-file").value = '';
+                    document.getElementById("admin-sheet-container").classList.add("hidden");
+                    currentWorkbook = null;
+                } else alert(res.message);
+            });
+        });
+
+        // ================= Manage Sets Logic =================
+        let editingSetId = null;
+        let editingSetData = null;
+
+        document.getElementById("btn-manage-sets").addEventListener("click", () => {
+            const pass = document.getElementById("admin-pass").value;
+            if (!pass) return alert("กรุณากรอกรหัสผ่านก่อน!");
+            
+            socket.emit('getSetsData', pass, (res) => {
+                if (res.success) {
+                    document.getElementById("admin-manage-modal").classList.remove("hidden");
+                    document.getElementById("manage-set-editor").classList.add("hidden");
+                    renderSetsList(res.data);
+                } else alert(res.message);
+            });
+        });
+
+        function renderSetsList(setsData) {
+            const list = document.getElementById("manage-sets-list");
+            list.innerHTML = "";
+            const keys = Object.keys(setsData);
+            
+            if (keys.length === 0) {
+                list.innerHTML = "<div style='color: white;'>ยังไม่มีชุดคำถามในระบบ</div>";
+                return;
+            }
+            
+            keys.forEach(id => {
+                const set = setsData[id];
+                const btn = document.createElement("button");
+                btn.className = "btn-secondary";
+                btn.style.width = "100%";
+                btn.style.marginBottom = "10px";
+                btn.textContent = `${set.name} (${set.questions.length} ข้อ)`;
+                btn.onclick = () => openSetEditor(set);
+                list.appendChild(btn);
+            });
+        }
+
+        function openSetEditor(set) {
+            editingSetId = set.id;
+            editingSetData = JSON.parse(JSON.stringify(set)); // deep copy
+            
+            document.getElementById("manage-set-editor").classList.remove("hidden");
+            document.getElementById("editor-set-name").textContent = `แก้ไข: ${set.name}`;
+            
+            renderEditorQuestions();
+        }
+
+        function renderEditorQuestions() {
+            const list = document.getElementById("editor-questions-list");
+            list.innerHTML = "";
+            
+            editingSetData.questions.forEach((q, index) => {
+                const div = document.createElement("div");
+                div.style.background = "rgba(0,0,0,0.4)";
+                div.style.padding = "10px";
+                div.style.marginBottom = "10px";
+                div.style.borderRadius = "8px";
+                
+                div.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                        <b style="color:var(--accent);">ข้อ ${index + 1}</b>
+                        <button onclick="deleteQuestion(${index})" style="background:var(--danger); border:none; color:white; border-radius:5px; cursor:pointer;">ลบข้อนี้</button>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:5px;">
+                        <input type="text" id="q_text_${index}" value="${q.q}" placeholder="คำถาม" style="width:100%; padding:5px;">
+                        <input type="text" id="q_c1_${index}" value="${q.c1}" placeholder="ข้อถูก (คำตอบ)" style="width:100%; padding:5px; border: 1px solid #4CAF50;">
+                        <input type="text" id="q_c2_${index}" value="${q.c2}" placeholder="ตัวเลือกหลอก 1" style="width:100%; padding:5px; border: 1px solid var(--danger);">
+                        <input type="text" id="q_c3_${index}" value="${q.c3}" placeholder="ตัวเลือกหลอก 2" style="width:100%; padding:5px; border: 1px solid var(--danger);">
+                        <input type="text" id="q_c4_${index}" value="${q.c4}" placeholder="ตัวเลือกหลอก 3" style="width:100%; padding:5px; border: 1px solid var(--danger);">
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+        
+        function deleteQuestion(index) {
+            if(confirm("แน่ใจหรือไม่ว่าต้องการลบคำถามข้อนี้?")) {
+                editingSetData.questions.splice(index, 1);
+                renderEditorQuestions();
+            }
+        }
+
+        document.getElementById("btn-save-set-changes").addEventListener("click", () => {
+            const pass = document.getElementById("admin-pass").value;
+            // ดึงค่าใหม่จาก input
+            editingSetData.questions.forEach((q, index) => {
+                const qText = document.getElementById(`q_text_${index}`);
+                if (qText) {
+                    q.q = qText.value;
+                    q.c1 = document.getElementById(`q_c1_${index}`).value;
+                    q.c2 = document.getElementById(`q_c2_${index}`).value;
+                    q.c3 = document.getElementById(`q_c3_${index}`).value;
+                    q.c4 = document.getElementById(`q_c4_${index}`).value;
+                }
+            });
+            
+            socket.emit('saveSetData', { password: pass, setId: editingSetId, setInfo: editingSetData }, (res) => {
+                if (res.success) {
+                    alert("บันทึกการแก้ไขเรียบร้อย!");
+                    document.getElementById("admin-manage-modal").classList.add("hidden");
+                } else alert(res.message);
+            });
+        });
+
+        document.getElementById("btn-delete-set").addEventListener("click", () => {
+            if (!confirm("คุณแน่ใจหรือไม่ว่าต้องการลบชุดคำถามนี้ทั้งหมด? การกระทำนี้ไม่สามารถย้อนกลับได้")) return;
+            const pass = document.getElementById("admin-pass").value;
+            
+            socket.emit('deleteSet', { password: pass, setId: editingSetId }, (res) => {
+                if (res.success) {
+                    alert("ลบชุดคำถามสำเร็จ!");
+                    document.getElementById("admin-manage-modal").classList.add("hidden");
+                } else alert(res.message);
+            });
+        });
+        // =====================================================
+
+        document.getElementById("btn-create-room").addEventListener("click", () => {
+            const playerName = document.getElementById("input-player-name").value.trim();
+            const setId = document.getElementById("select-question-set").value;
+            
+            if (!playerName) return alert("กรุณากรอกชื่อก่อนสร้างห้อง");
+            if (!setId) return alert("กรุณาเลือกชุดคำถาม");
+            
+            isHost = true;
+            currentRoomId = generateRoomCode();
+            
+            const data = {
+                roomId: currentRoomId,
+                hostName: playerName,
+                setId: setId,
+                mode: document.getElementById('game-mode') ? document.getElementById('game-mode').value : 'multi',
+                timeLimit: document.getElementById('time-limit') ? document.getElementById('time-limit').value : 10,
+                mistakeLimit: document.getElementById('mistake-limit') ? document.getElementById('mistake-limit').value : 3
+            };
+            
+            socket.emit('createRoom', data, (res) => {
+                if (res.success) {
+                    document.getElementById("room-code-label").textContent = currentRoomId;
+                    const joinUrl = `${window.location.origin}/fanpantae?room=${currentRoomId}`;
+                    document.getElementById("qr-code-img").src = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(joinUrl)}`;
+                    document.getElementById("qr-container").classList.remove("hidden");
+                    document.getElementById("btn-start-game").classList.remove("hidden");
+                    showScreen("setup");
+                }
+            });
+        });
+
+        document.getElementById("btn-join-room").addEventListener("click", () => {
+            playerName = document.getElementById("input-player-name").value.trim();
+            const roomCode = document.getElementById("input-room-code").value.trim().toUpperCase();
+            if (!playerName || !roomCode) return alert("กรุณากรอกชื่อและรหัสห้อง!");
+
+            isHost = false; currentRoomId = roomCode;
+            socket.emit('joinRoom', { roomId: currentRoomId, playerName: playerName }, (res) => {
+                if (res.success) {
+                    document.getElementById("room-code-label").textContent = currentRoomId;
+                    document.getElementById("qr-container").classList.add("hidden");
+                    document.getElementById("btn-start-game").classList.add("hidden");
+                    showScreen("setup");
+                } else alert(res.message);
+            });
+        });
+
+        socket.on('playerJoined', (data) => {
+            const count = data.players.filter(p => !p.isHost).length;
+            document.getElementById("players-list").textContent = `ผู้เล่น (ไม่รวมโฮสต์): ${count} คน`;
+        });
+
+        document.getElementById("btn-start-game").addEventListener("click", () => {
+            if (isHost) socket.emit('startGame', currentRoomId);
+        });
+
+        let fanTimerInterval = null;
+        function startFanTimer(seconds) {
+            let timeLeft = seconds;
+            const timerEl = document.getElementById('fan-timer-display');
+            timerEl.style.color = "white";
+            
+            if (fanTimerInterval) clearInterval(fanTimerInterval);
+            
+            fanTimerInterval = setInterval(() => {
+                timeLeft--;
+                timerEl.textContent = `เวลา: ${timeLeft}s`;
+                if(timeLeft <= 3) timerEl.style.color = "var(--danger)";
+                
+                if(timeLeft <= 0) {
+                    clearInterval(fanTimerInterval);
+                }
+            }, 1000);
+            timerEl.textContent = `เวลา: ${timeLeft}s`;
+        }
+
+        socket.on('newQuestion', (data) => {
+            document.getElementById("round-result-overlay").classList.add("hidden"); 
+            document.getElementById("my-round-score").classList.add("hidden");
+            
+            if (isHost) {
+                document.getElementById("host-live-scoreboard").classList.remove("hidden");
+            }
+            
+            if (data.mode === 'single') {
+                document.getElementById('fan-timer-display').classList.remove('hidden');
+                startFanTimer(data.timeLimit);
+            } else {
+                document.getElementById('fan-timer-display').classList.add('hidden');
+            }
+            
+            // เปิดเพลงพื้นหลังสุดตื่นเต้น
+            const bgMusic = document.getElementById("bg-music");
+            bgMusic.play().catch(e => console.log("Music play prevented by browser:", e));
+            
+            showScreen("game");
+            document.getElementById("question-number").textContent = `คำถามที่ ${data.qIndex} / ${data.total}`;
+            document.getElementById("question-text").textContent = data.question;
+            
+            const container = document.getElementById("answers-container");
+            container.innerHTML = '';
+            
+            data.choices.forEach((choice) => {
+                const btn = document.createElement("button");
+                btn.className = "btn-answer"; btn.textContent = choice;
+                if (isHost) {
+                    btn.disabled = true;
+                } else {
+                    btn.onclick = () => {
+                        document.querySelectorAll(".btn-answer").forEach(b => b.disabled = true);
+                        btn.style.background = "var(--accent-2)";
+                        btn.style.color = "white";
+                        socket.emit('submitAnswer', { roomId: currentRoomId, answer: choice });
+                        document.getElementById("game-status-message").textContent = "ส่งคำตอบแล้ว รอลุ้นผล...";
+                    };
+                }
+                container.appendChild(btn);
+            });
+
+            document.getElementById("game-status-message").textContent = isHost ? "รอผู้เล่นคนแรกตอบถูก..." : "ใครตอบถูกคนแรกได้คะแนน!";
+        });
+
+        socket.on('wrongAnswer', () => {
+            document.getElementById("wrong-sound").play().catch(() => {});
+            document.getElementById("game-status-message").innerHTML = "<span style='color: var(--danger)'>❌ ผิดครับ! รอข้อต่อไป</span>";
+        });
+
+        socket.on('playerAnsweredWrong', (data) => {
+            // โชว์ข้อความบอกว่ามีคนตอบผิดให้คนที่ยังไม่ได้ตอบหรือโฮสต์เห็น
+            const msgBox = document.getElementById("game-status-message");
+            msgBox.innerHTML += `<div style='color: var(--warning); font-size: 0.9rem; margin-top: 5px;'>⚠️ ${data.playerName} ตอบผิดไปแล้ว! (โอกาสตกเป็นของคนอื่น)</div>`;
+        });
+
+        socket.on('updateLiveScores', (scores) => {
+            if (!isHost) return;
+            const list = document.getElementById("live-scores-list");
+            list.innerHTML = '';
+            
+            scores.sort((a, b) => b.score - a.score).forEach((p, i) => {
+                list.innerHTML += `<div style="display: flex; justify-content: space-between; margin-bottom: 5px; padding: 8px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+                    <span>${i + 1}. ${p.name}</span>
+                    <span style="color: var(--accent); font-weight: bold;">${p.score} pt</span>
+                </div>`;
+            });
+            if (scores.length === 0) list.innerHTML = "<div style='text-align:center; color:var(--muted);'>ยังไม่มีผู้เล่น</div>";
+        });
+
+        socket.on('roundWinner', (data) => {
+            if (fanTimerInterval) clearInterval(fanTimerInterval);
+            document.getElementById("bg-music").pause();
+            
+            document.getElementById("round-result-overlay").classList.remove("hidden");
+            document.getElementById("round-correct-answer").textContent = data.correctAnswer;
+            
+            if (data.winnerName === "ไม่มีใคร") {
+                // ไม่มีใครถูก หรือตอบผิดหมด/หมดเวลา
+                // เราไม่มี id "sfx-wrong" ชัดเจน แต่ถ้ามีไฟล์ sound ก็เล่นได้
+                document.getElementById("round-winner-title").textContent = "อ่าว... ไม่มีใครตอบถูกเลย หรือหมดเวลา!";
+                document.getElementById("round-winner-title").style.color = "var(--danger)";
+                document.getElementById("round-winner-name").textContent = "-";
+            } else {
+                document.getElementById("correct-sound").play().catch(() => {});
+                document.getElementById("round-winner-title").textContent = "มีคนตอบถูกแล้ว!";
+                document.getElementById("round-winner-title").style.color = "var(--accent)";
+                document.getElementById("round-winner-name").textContent = `ผู้ตอบถูก: ${data.winnerName}`;
+                
+                if (data.winnerId === socket.id) {
+                    document.getElementById("my-round-score").classList.remove("hidden");
+                    document.getElementById("my-total-score").textContent = data.winnerScore;
+                }
+            }
+        });
+
+        socket.on('gameOver', (data) => {
+            if (fanTimerInterval) clearInterval(fanTimerInterval);
+            document.getElementById("bg-music").pause();
+            document.getElementById("round-result-overlay").classList.add("hidden");
+            showScreen("result");
+            
+            const sb = document.getElementById("scoreboard");
+            const rTitle = document.getElementById("result-title");
+            const rSub = document.getElementById("result-subtitle");
+            sb.innerHTML = '';
+            
+            const sortedPlayers = data.players
+                .filter(p => !p.isHost)
+                .sort((a, b) => b.score - a.score);
+                
+            let myRank = 0;
+            sortedPlayers.forEach((p, index) => {
+                if (p.name === playerName && p.id === socket.id) myRank = index + 1;
+                sb.innerHTML += `<div style="margin-bottom: 8px; font-size: 1.1rem; padding: 10px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    <strong>อันดับ ${index + 1}:</strong> ${p.name} <span style="float: right; color:var(--accent)">${p.score} คะแนน</span>
+                </div>`;
+            });
+
+            if (data.reason === "mistakes") {
+                rTitle.textContent = "จบเกม! คุณตอบผิดเกินกำหนด";
+                rTitle.style.color = "var(--danger)";
+                rSub.textContent = `ผิดไป ${data.mistakes} ครั้ง`;
+                return;
+            }
+
+            if (isHost) {
+                rTitle.textContent = "จบเกม!";
+                rTitle.style.color = "white";
+                rSub.textContent = "สรุปคะแนนผู้เข้าแข่งขัน";
+            } else if (myRank === 1 && sortedPlayers.length > 0 && sortedPlayers[0].score > 0) {
+                rTitle.textContent = "🏆 ยินดีด้วย คุณคือผู้ชนะ! 🏆";
+                rTitle.style.color = "var(--accent)";
+                rSub.textContent = "สุดยอดแฟนพันธุ์แท้ตัวจริง!";
+            } else {
+                rTitle.textContent = "จบเกม!";
+                rTitle.style.color = "white";
+                rSub.textContent = `คุณได้อันดับที่ ${myRank} จาก ${sortedPlayers.length} คน`;
+            }
+        });
+    </script>
+</body>
+</html>
